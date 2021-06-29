@@ -3,7 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "start": "node ./index.js"
+    "start": "node ./index.js" ,
+    "release" : "standard-version"
+  },
+  "standard-version": {
+    "skip" : {
+      "tag" : true ,
+      "commit" : true
+    }
   },
   "dependencies": {
     "abort-controller": "^3.0.0",
