@@ -10,10 +10,15 @@ const _ = require("lodash");
 const mongodb = require("../common/data");
 const config = require("./config");
 const path = require('path');
+const getPort = require('get-port');
+
+let semVal = "";
 async function getCourseExcel(driver) {
     return new Promise(async (resolve) => {
         await driver.navigate().to("http://system10.ntunhs.edu.tw/AcadInfoSystem/Modules/QueryCourse/QueryCourse.aspx");
-        await driver.executeScript(`$("#ContentPlaceHolder1_ddlSem").children().eq(1).attr("selected" ,true).change()`); //高到低 0>當前 1> 上學期
+        await driver.executeScript(`$("#ContentPlaceHolder1_ddlSem").children().eq(2).attr("selected" ,true).change()`); //高到低 1>當前 2> 上學期
+        let $ = cheerio.load(await driver.getPageSource());
+        semVal = $("#ContentPlaceHolder1_ddlSem").val();
         await driver.executeScript(`$("#ContentPlaceHolder1_btnQuery").click()`);
         driver.wait(webdriver.until.elementIsVisible(driver.findElement(webdriver.By.id("ContentPlaceHolder1_imgExcel"))), 150000).then(async (p) => {
             await driver.executeScript(`$("#ContentPlaceHolder1_imgExcel").click()`);
@@ -26,15 +31,15 @@ async function getCourseExcel(driver) {
                 }
                 console.log(matches);
                 for (let match of matches) {
-                    if (match.includes("課程查詢")) {
+                    if (match.includes("_")) {
                         let matchDirname = path.dirname(match);
                         let storePath = path.join(matchDirname , "courses.xls");
                         fs.renameSync(match, storePath);
                         return resolve(true);
-                    } else {
-                        return resolve(true);
                     }
                 }
+                console.error("未下載Excel檔案");
+                process.exit(1);
             });
         })
     })
@@ -72,20 +77,21 @@ async function seleSchoolLogin(iDriver, acc, pwd) {
 }
 
 async function getCoursePlanPageUrl(driver) {
-    /*let opt = new chrome.Options();
-    opt.addArguments('--headless');
-    opt.addArguments('--disable-gpu');
-    opt.addArguments('--incognito');
-    opt.setUserPreferences({"download.default_directory" :  __dirname});
-    let driver = await new webdriver.Builder().forBrowser('chrome').setChromeOptions(opt).build(); //创建一个chrome 浏览器实例*/
     [___, driver] = await seleSchoolLogin(driver, config.stuNum, config.stuPwd);
     await driver.navigate().to("https://system8.ntunhs.edu.tw/myNTUNHS_student/Modules/Teachplan/qry/Teachplan_qry_01.aspx");
+    let currentUrl = await driver.getCurrentUrl();
+    while(!currentUrl.includes("Teachplan")) {
+        currentUrl = await driver.getCurrentUrl();
+        await driver.navigate().to("https://system8.ntunhs.edu.tw/myNTUNHS_student/Modules/Teachplan/qry/Teachplan_qry_01.aspx");
+    }
     await driver.sleep(2000);
     let queryFrame = await driver.findElement({ id: 'ctl00_ContentPlaceHolderQuery_QueryFrame' });
     await driver.switchTo().frame(queryFrame);
     await driver.sleep(1000);
     //await driver.executeScript(`$("#ddlSemNo").children().eq(9).attr("selected" ,true).change()`); //低到高
-    await driver.executeScript(`$("#ddlSemNo").children().last().attr("selected" ,true).change()`);
+    //await driver.executeScript(`$("#ddlSemNo").children().last().attr("selected" ,true).change()`);
+    console.log(semVal);
+    await driver.executeScript(`$("#ddlSemNo").val("${semVal}").change()`);
     await driver.executeScript(`$("#btnQuery").click();`);
     await driver.switchTo().window(driver.getWindowHandle());
     let listFrame = await driver.findElement({ id: "ctl00_ContentPlaceHolderList_ListFrame" });
@@ -118,7 +124,8 @@ async function crawlCoursePlan(driver) {
         let $ = cheerio.load(await driver.getPageSource());
         $("a").each((index, element) => {
             let href = element.attribs.href;
-            if (href.includes("140.131")) {
+            if ( (href.includes("system8") && href.includes(semVal)) 
+                 || (href.includes("140.131")) ) {
                 console.log(href);
                 let filenameSplit = href.split("-");
                 if (filenameSplit.length == 4) {
@@ -157,13 +164,13 @@ async function getFaculties() {
     return itemJson;
 }
 async function updateCourse() {
+    const mongoConn = await mongodb.MongoExe();
     let courseXlsData = xlsx.readFile(path.join(__dirname, "./courses.xls"));
     let sheetsName = courseXlsData.SheetNames[0];
     let dataJson = xlsx.utils.sheet_to_json(courseXlsData.Sheets[sheetsName], { range: 4 }); //The couese excel header row is 5
     let coursePlans = await getCoursePlan();
     let faculties = await getFaculties();
     let result = [];
-    console.log(dataJson[0]);
     for (let item of dataJson) {
         let hitCourse = _.filter(coursePlans, v => {
             if (_.get(v, "secondCode")) {
@@ -202,12 +209,13 @@ async function updateCourse() {
         newObj.Course_Code = item["科目代碼(舊碼)"];
         newObj.Open_Teacher_Code = item["主開課教師代碼(舊碼)"];
         newObj.Schedule_Code = item["課表代碼(舊碼)"];
+        newObj.Course_Class = item["上課班組"];
         newObj.Class_Plan = item.Class_Plan;
         newObj._id = `${newObj.Sem}_${newObj.Course_Id}`;
         result.push(newObj);
     }
     const conn = await mongodb.MongoExe();
-    conn.db('My_ntunhs').collection("All_Courses").createIndex(
+    mongoConn.db('My_ntunhs').collection("All_Courses_copy").createIndex(
         {
             "Course_Name": 1
         }
@@ -222,34 +230,39 @@ async function updateCourse() {
         let id = course._id;
         await (async () => {
             return new Promise((resolve) => {
-                conn.db('My_ntunhs').collection("All_Courses").findOneAndUpdate({ _id: id }, { $set: course }, { upsert: true }, async function (err, doc) {
+                mongoConn.db('My_ntunhs').collection("All_Courses_copy").findOneAndUpdate({ _id: id }, { $set: course }, { upsert: true }, async function (err, doc) {
                     if (err) {
                         console.error(err);
                         return resolve(false);
                     }
                     //console.log(doc);
-                    await conn.close();
                     return resolve(doc);
                 })
             })
         })();
     }
     console.log(result.length);
+    await mongoConn.close();
     return true;
 }
 async function updateCourseMain() {
     let opt = new chrome.Options();
+    /*opt.addArguments('--no-sandbox');
+    opt.addArguments('--disable-dev-shm-usage');
     opt.addArguments('--headless');
     opt.addArguments('--disable-gpu');
-    opt.addArguments('--incognito');
+    opt.addArguments('--incognito');*/
+    let debugPort = await getPort();
+    opt.addArguments(`--remote-debugging-port=${debugPort}`);
     opt.setUserPreferences({ "download.default_directory": __dirname });
     let driver = await new webdriver.Builder().forBrowser('chrome').setChromeOptions(opt).build(); //创建一个chrome 浏览器实例
-    crawlCoursePlan(driver).then(() => {
-        getCourseExcel(driver).then(() => {
+    getCourseExcel(driver).then(() => {
+        crawlCoursePlan(driver).then(() => {
             driver.quit();
             //driver.quit();
             updateCourse().then(() => {
-                console.log("success");
+                console.log("success :" + semVal);
+                Promise.resolve(true);
             });
         });
     });

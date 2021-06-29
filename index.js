@@ -1,4 +1,5 @@
 const { updateCourseMain } = require('./models/NTUNHS/updateCourse');
 
-
-updateCourseMain();
+(async ()=> {
+    await updateCourseMain();
+})();

@@ -3,3 +3,4 @@ models/NTUNHS/courses.xls
 models/NTUNHS/debug.log
 config/config.js
 models/NTUNHS/config.js
+*.log
