@@ -27,3 +27,11 @@ module.exports =
     }
 };
 ```
+
+Add config in `models/NTUNHS/config.js` to fetch course
+```javascript
+module.exports  = {
+    stuNum : "北護入口網帳號" , 
+    stuPwd : "北護入口網密碼"
+}
+```
